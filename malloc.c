@@ -5,10 +5,11 @@
  * Traverse free blocks only instead of entire heap
  * Better method of finding free space to reduce fragmentation
  * Add mutexes and atomics so multithreading isn't a disaster.
- * Determine optimal alignment properly instead of just hardcoding it to 16 characters
  * Write tests.
  */
 
+#include <stddef.h>
+#include <stdalign.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -21,13 +22,15 @@ void free(void *ptr);
 void *calloc(size_t nmemb, size_t size);
 void *realloc(void *ptr, size_t size);
 
-#define ALIGNMENT 16
+// As of C11, determines the alignment to use for 
+#define ALIGNMENT alignof(max_align_t)
 
 // Alignment must be a power of 2.
 #define ALIGN(size, alignment) (((size) + alignment - 1) & ~(alignment - 1))
 
+// This struct should be aligned to the same alignment as max_align_t.
 struct block_hdr {
-	struct block_hdr *region;
+	alignas(max_align_t) struct block_hdr *region;
 	struct block_hdr *next;
 	struct block_hdr *prev;
 	// size is tagged such that the LSB denotes whether this block is allocated.
