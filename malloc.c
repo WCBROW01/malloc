@@ -5,7 +5,9 @@
  * Traverse free blocks only instead of entire heap
  * Better method of finding free space to reduce fragmentation
  * Add mutexes and atomics so multithreading isn't a disaster.
- * Determine optimal alignment properly instead of just hardcoding it to 16 characters */
+ * Determine optimal alignment properly instead of just hardcoding it to 16 characters
+ * Write tests.
+ */
 
 #include <stdint.h>
 #include <string.h>
@@ -20,6 +22,8 @@ void *calloc(size_t nmemb, size_t size);
 void *realloc(void *ptr, size_t size);
 
 #define ALIGNMENT 16
+
+// Alignment must be a power of 2.
 #define ALIGN(size, alignment) (((size) + alignment - 1) & ~(alignment - 1))
 
 struct block_hdr {
@@ -62,6 +66,7 @@ static struct block_hdr *alloc_block(struct block_hdr *block, size_t size) {
 		
 		free_block->region = block->region;
 		free_block->next = block->next;
+		if (free_block->next) free_block->next->prev = free_block;
 		free_block->prev = block;
 		free_block->size = free_block_size - sizeof(struct block_hdr);
 		
@@ -106,14 +111,19 @@ void free(void *ptr) {
 	// Merge adjacent blocks
 	size_t new_block_size = block->size & ~1UL;
 	struct block_hdr *new_block = block;
-	if (!(block->prev->size & 1)) {
+	
+	// Previous block is in the same region and free
+	if (block->prev->region == block->region && !(block->prev->size & 1)) {
 		new_block = block->prev;
 		new_block->next = block->next;
+		if (new_block->next) new_block->next->prev = new_block;
 		new_block_size += new_block->size + sizeof(struct block_hdr);
 	}
 	
-	if (block->next && !(block->next->size & 1)) {
+	// Next block exists, is in the same region, and is free
+	if (block->next && block->next->region == block->region && !(block->next->size & 1)) {
 		new_block->next = block->next->next;
+		if (new_block->next) new_block->next->prev = new_block;
 		new_block_size += block->next->size + sizeof(struct block_hdr);
 	}
 	
@@ -148,23 +158,29 @@ void *realloc(void *ptr, size_t size) {
 	size = ALIGN(size, ALIGNMENT);
 	struct block_hdr *block = (struct block_hdr *) ptr - 1;
 	
-	size_t combined_block_size = 
-		(block->next->size & ~1UL) + (block->size & ~1UL) + sizeof(struct block_hdr);
-	
-	// there is enough adjacent free space, just create a new bigger one.
-	if (!(block->next->size & 1) && combined_block_size >= size) {		
+	size_t combined_block_size;
+	// there is enough adjacent free space, just create a new bigger block.
+	if (
+		block->next &&
+		block->next->region == block->region &&
+		!(block->next->size & 1) &&
+		(combined_block_size = block->next->size + (block->size & ~1UL) + sizeof(struct block_hdr)) >= size
+	) {
 		size_t leftover_block_size = combined_block_size - size;
 		if (leftover_block_size > sizeof(struct block_hdr)) {
 			struct block_hdr *new_block = (struct block_hdr *)
 				((char *) block + sizeof(struct block_hdr *) + size);
 
+			new_block->region = block->region;
 			new_block->next = block->next->next;
+			if (new_block->next) new_block->next->prev = new_block;
 			new_block->prev = block;
 			new_block->size = leftover_block_size - sizeof(struct block_hdr);
 			block->next = new_block;
 			block->size = size;
 		} else {
 			block->next = block->next->next;
+			if (block->next) block->next->prev = block;
 			block->size = combined_block_size; // avoid leaking memory
 		}
 		return ptr;
